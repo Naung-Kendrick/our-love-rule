@@ -16,7 +16,8 @@ export interface Room {
 
 export interface Rule {
   id: string;
-  text: string;
+  title: string;
+  description: string;
   authorId: string;
   authorName: string;
   createdAt: any;

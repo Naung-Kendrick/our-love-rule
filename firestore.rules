@@ -45,8 +45,9 @@ service cloud.firestore {
     }
 
     function isValidRule(data) {
-      return data.keys().hasAll(['text', 'authorId', 'authorName', 'createdAt', 'isDone'])
-        && data.text is string && data.text.size() <= 500
+      return data.keys().hasAll(['title', 'description', 'authorId', 'authorName', 'createdAt', 'isDone'])
+        && data.title is string && data.title.size() <= 100
+        && data.description is string && data.description.size() <= 1000
         && data.authorName is string && (data.authorName == 'Ko' || data.authorName == 'Thet Htar')
         && data.createdAt == request.time
         && data.isDone is bool;
@@ -96,7 +97,7 @@ service cloud.firestore {
             (incoming().diff(existing()).affectedKeys().hasOnly(['isDone']))
             ||
             // Edit own rule
-            (existing().authorId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['text']))
+            (existing().authorId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description']))
           )
           && isValidRule(incoming());
         allow delete: if isSignedIn() && isRoomMember(roomId) && (existing().authorId == request.auth.uid || isAdmin());

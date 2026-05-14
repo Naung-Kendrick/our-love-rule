@@ -31,7 +31,6 @@ import {
   Sparkles,
   ScrollText,
   BookHeart,
-  MessageHeart,
   Image as ImageIcon,
   X
 } from 'lucide-react';
@@ -88,12 +87,14 @@ export default function App() {
   const [vows, setVows] = useState<Vow[]>([]);
   const [memories, setMemories] = useState<Memory[]>([]);
   const [loading, setLoading] = useState(true);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'rules' | 'vows' | 'journey'>('rules');
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (u) => {
       if (u) {
         setUser(u);
+        setAuthError(null);
         const userDoc = await getDoc(doc(db, 'users', u.uid));
         if (userDoc.exists()) {
           setProfile(userDoc.data() as UserProfile);
@@ -101,8 +102,13 @@ export default function App() {
       } else {
         try {
           await signInAnonymously(auth);
-        } catch (error) {
+        } catch (error: any) {
           console.error("Anonymous auth failed", error);
+          if (error.code === 'auth/configuration-not-found') {
+            setAuthError("Anonymous authentication is not enabled in your Firebase project. Please enable it in the Firebase Console (Build > Authentication > Sign-in method).");
+          } else {
+            setAuthError(error.message);
+          }
         }
       }
       setLoading(false);
@@ -162,6 +168,31 @@ export default function App() {
       };
     }
   }, [profile?.roomId]);
+
+  if (authError) {
+    return (
+      <div className="min-h-screen bg-rose-50 flex items-center justify-center p-6 bg-[#FFF9F9] relative overflow-hidden">
+        <FloatingHearts />
+        <div className="max-w-md w-full bg-white p-10 rounded-[3rem] border-2 border-rose-100 shadow-xl text-center space-y-6 relative z-10">
+          <div className="bg-rose-100 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4">
+            <Heart className="w-8 h-8 text-rose-500 fill-rose-500" />
+          </div>
+          <h2 className="text-3xl font-serif font-black italic text-slate-900 tracking-tight">Setup Required</h2>
+          <p className="text-slate-600 font-serif italic text-lg leading-relaxed">
+            {authError}
+          </p>
+          <div className="pt-4">
+            <button 
+              onClick={() => window.location.reload()}
+              className="px-8 py-3 bg-rose-500 text-white rounded-full font-serif font-bold italic shadow-md hover:bg-rose-600 transition-colors"
+            >
+              Check Again
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (loading) {
     return (
@@ -500,21 +531,24 @@ function MonthlyReminder({ day }: { day: number }) {
 }
 
 function RulesSection({ roomId, rules, profile }: { roomId: string, rules: Rule[], profile: UserProfile }) {
-  const [text, setText] = useState('');
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
   const [showAdd, setShowAdd] = useState(false);
 
   const handleAdd = async (e: FormEvent) => {
     e.preventDefault();
-    if (!text.trim()) return;
+    if (!title.trim() || !description.trim()) return;
     try {
       await addDoc(collection(db, `rooms/${roomId}/rules`), {
-        text: text.trim(),
+        title: title.trim(),
+        description: description.trim(),
         authorId: profile.uid,
         authorName: profile.displayName,
         createdAt: serverTimestamp(),
         isDone: false
       });
-      setText('');
+      setTitle('');
+      setDescription('');
       setShowAdd(false);
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, `rooms/${roomId}/rules`);
@@ -562,15 +596,24 @@ function RulesSection({ roomId, rules, profile }: { roomId: string, rules: Rule[
             onSubmit={handleAdd}
             className="space-y-4 px-2"
           >
-            <input
-              autoFocus
-              type="text"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder="What should be our next rule? ✍️"
-              className="w-full bg-white border-2 border-rose-100 p-5 rounded-2xl focus:outline-none focus:border-rose-400 shadow-sm font-serif italic text-lg"
-              maxLength={500}
-            />
+            <div className="space-y-3">
+              <input
+                autoFocus
+                type="text"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="Rule title..."
+                className="w-full bg-white border-2 border-rose-100 p-4 rounded-2xl focus:outline-none focus:border-rose-300 shadow-sm font-serif italic text-lg"
+                maxLength={100}
+              />
+              <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Describe the rule..."
+                className="w-full bg-white border-2 border-rose-100 p-4 rounded-2xl focus:outline-none focus:border-rose-300 shadow-sm font-serif italic text-lg min-h-[100px] resize-none"
+                maxLength={1000}
+              />
+            </div>
             <div className="flex justify-end gap-3">
               <button 
                 type="button" 
@@ -582,8 +625,9 @@ function RulesSection({ roomId, rules, profile }: { roomId: string, rules: Rule[
               <button 
                 type="submit"
                 className="px-8 py-2 bg-rose-500 text-white rounded-full font-serif font-bold italic shadow-md hover:bg-rose-600 transition-colors"
+                disabled={!title.trim() || !description.trim()}
               >
-                Add to List
+                Add Rule
               </button>
             </div>
           </motion.form>
@@ -606,12 +650,16 @@ function RulesSection({ roomId, rules, profile }: { roomId: string, rules: Rule[
             >
               {rule.isDone ? <CheckCircle2 className="w-6 h-6 sm:w-7 sm:h-7" /> : <Circle className="w-6 h-6 sm:w-7 sm:h-7" />}
             </button>
-            <div className="flex-1 min-w-0">
-              <p className={`text-base sm:text-lg font-serif italic font-medium leading-snug break-words ${rule.isDone ? 'line-through text-slate-400 decoration-rose-300' : 'text-slate-800'}`}>
-                {rule.text}
+            <div className="flex-1 min-w-0 py-1">
+              <h4 className={`text-lg sm:text-xl font-serif italic font-bold leading-snug break-words ${rule.isDone ? 'line-through text-slate-400 decoration-rose-300' : 'text-rose-950'}`}>
+                {rule.title}
+              </h4>
+              <p className={`mt-1 text-sm sm:text-base font-serif italic leading-relaxed break-words ${rule.isDone ? 'line-through text-slate-300' : 'text-slate-600'}`}>
+                {rule.description}
               </p>
-              <div className="flex items-center gap-2 mt-1">
-                <span className="text-[9px] sm:text-[10px] uppercase tracking-widest font-bold text-rose-400/70">Proposed by {rule.authorName}</span>
+              <div className="flex items-center gap-2 mt-3 pt-3 border-t border-rose-100/30">
+                <div className={`w-1.5 h-1.5 rounded-full ${rule.authorName === 'Ko' ? 'bg-blue-400' : 'bg-rose-400'}`} />
+                <span className="text-[10px] uppercase tracking-widest font-bold text-slate-400">Proposed by {rule.authorName}</span>
               </div>
             </div>
             {rule.authorId === profile.uid && (
