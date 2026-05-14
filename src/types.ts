@@ -1,44 +1,45 @@
 export interface UserProfile {
   uid: string;
-  displayName: string;
-  roomId?: string;
+  display_name: string;
+  room_id?: string;
 }
 
 export interface Room {
   id: string;
   code: string;
-  partner1: string;
-  partner1Name: string;
-  partner2?: string;
-  partner2Name?: string;
-  startDate?: string;
+  partner1_name: string;
+  partner2_name?: string;
+  start_date?: string;
 }
 
 export interface Rule {
   id: string;
+  room_id: string;
   title: string;
   description: string;
-  authorId: string;
-  authorName: string;
-  createdAt: any;
-  isDone: boolean;
+  author_id: string;
+  author_name: string;
+  created_at: any;
+  is_done: boolean;
 }
 
 export interface Vow {
   id: string;
+  room_id: string;
   text: string;
-  authorId: string;
-  authorName: string;
-  createdAt: any;
+  author_id: string;
+  author_name: string;
+  created_at: any;
 }
 
 export interface Memory {
   id: string;
+  room_id: string;
   text: string;
   date: string;
-  imageUrl?: string;
-  authorId: string;
-  createdAt: any;
+  image_url: string;
+  author_id: string;
+  created_at: any;
 }
 
 export enum OperationType {
@@ -50,19 +51,12 @@ export enum OperationType {
   WRITE = 'write',
 }
 
-export interface FirestoreErrorInfo {
+export interface DatabaseErrorInfo {
   error: string;
   operationType: OperationType;
   path: string | null;
   authInfo: {
     userId?: string | null;
     email?: string | null;
-    emailVerified?: boolean | null;
-    isAnonymous?: boolean | null;
-    tenantId?: string | null;
-    providerInfo?: {
-      providerId?: string | null;
-      email?: string | null;
-    }[];
   }
 }

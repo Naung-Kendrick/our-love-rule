@@ -1,24 +1,18 @@
-import { auth } from './firebase';
-import { OperationType, FirestoreErrorInfo } from '../types';
+import { supabase } from './supabase';
+import { OperationType, DatabaseErrorInfo } from '../types';
 
-export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errInfo: FirestoreErrorInfo = {
+export async function handleDatabaseError(error: unknown, operationType: OperationType, path: string | null) {
+  const { data: { session } } = await supabase.auth.getSession();
+  const errInfo: DatabaseErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo: auth.currentUser?.providerData?.map(provider => ({
-        providerId: provider.providerId,
-        email: provider.email,
-      })) || []
+      userId: session?.user?.id,
+      email: session?.user?.email,
     },
     operationType,
     path
   }
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  console.error('Database Error: ', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
 }
 

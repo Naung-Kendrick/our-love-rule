@@ -1,22 +1,6 @@
 import React, { useState, useEffect, FormEvent, useMemo, useRef } from 'react';
-import { 
-  signInAnonymously,
-  onAuthStateChanged,
-  User
-} from 'firebase/auth';
-import { 
-  doc, 
-  setDoc, 
-  getDoc, 
-  onSnapshot,
-  collection,
-  query,
-  orderBy,
-  addDoc,
-  updateDoc,
-  deleteDoc,
-  serverTimestamp,
-} from 'firebase/firestore';
+import { supabase } from './lib/supabase';
+import type { User } from '@supabase/supabase-js';
 import { 
   Heart, 
   Plus, 
@@ -36,9 +20,8 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { intervalToDuration } from 'date-fns';
-import { auth, db } from './lib/firebase';
 import { UserProfile, Room, Rule, Vow, Memory, OperationType } from './types';
-import { handleFirestoreError } from './lib/utils';
+import { handleDatabaseError } from './lib/utils';
 
 const FIXED_ROOM_ID = 'ko-and-thet-htar-shared-room';
 
@@ -91,83 +74,128 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'rules' | 'vows' | 'journey'>('rules');
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (u) => {
-      if (u) {
-        setUser(u);
+    const initAuth = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user) {
+        setUser(session.user);
         setAuthError(null);
-        const userDoc = await getDoc(doc(db, 'users', u.uid));
-        if (userDoc.exists()) {
-          setProfile(userDoc.data() as UserProfile);
+        const { data: userDoc } = await supabase
+          .from('users')
+          .select('*')
+          .eq('uid', session.user.id)
+          .single();
+        if (userDoc) {
+          setProfile(userDoc as UserProfile);
         }
       } else {
         try {
-          await signInAnonymously(auth);
+          const { data, error } = await supabase.auth.signInAnonymously();
+          if (error) throw error;
+          if (data.user) setUser(data.user);
         } catch (error: any) {
           console.error("Anonymous auth failed", error);
-          if (error.code === 'auth/configuration-not-found') {
-            setAuthError("Anonymous authentication is not enabled in your Firebase project. Please enable it in the Firebase Console (Build > Authentication > Sign-in method).");
+          if (error.message?.includes('Anonymous sign-ins are disabled')) {
+            setAuthError("Anonymous authentication is disabled. Please enable it in your Supabase Dashboard: Authentication > Providers > Anonymous (Enable Anonymous Sign-ins).");
+          } else if (error.message?.includes('API key')) {
+            setAuthError("Invalid Supabase API key. Please check your project settings.");
           } else {
-            setAuthError(error.message);
+            setAuthError(`Connection Error: ${error.message}. Please ensure your Supabase project is active and configured correctly.`);
           }
         }
       }
       setLoading(false);
+    };
+
+    initAuth();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (session?.user) {
+        setUser(session.user);
+        setAuthError(null);
+        const { data: userDoc } = await supabase
+          .from('users')
+          .select('*')
+          .eq('uid', session.user.id)
+          .single();
+        if (userDoc) {
+          setProfile(userDoc as UserProfile);
+        }
+      } else {
+        setUser(null);
+        setProfile(null);
+      }
     });
-    return () => unsubscribe();
+
+    return () => subscription.unsubscribe();
   }, []);
 
   const handleIdentitySelect = async (name: 'Ko' | 'Thet Htar') => {
     if (!user) return;
     const devProfile = {
-      uid: user.uid,
-      displayName: name,
-      roomId: FIXED_ROOM_ID
+      uid: user.id,
+      display_name: name,
+      room_id: FIXED_ROOM_ID
     };
 
-    const roomRef = doc(db, 'rooms', FIXED_ROOM_ID);
-    const roomSnap = await getDoc(roomRef);
-    if (!roomSnap.exists()) {
-      await setDoc(roomRef, {
+    const { data: roomSnap } = await supabase
+      .from('rooms')
+      .select('*')
+      .eq('id', FIXED_ROOM_ID)
+      .single();
+
+    if (!roomSnap) {
+      await supabase.from('rooms').insert({
+        id: FIXED_ROOM_ID,
         code: 'LOVE',
-        partner1Name: 'Ko',
-        partner2Name: 'Thet Htar',
-        startDate: '2025-02-02'
+        partner1_name: 'Ko',
+        partner2_name: 'Thet Htar',
+        start_date: '2025-02-02'
       });
     }
 
-    await setDoc(doc(db, 'users', user.uid), devProfile);
+    await supabase.from('users').upsert(devProfile);
     setProfile(devProfile);
   };
 
   useEffect(() => {
-    if (profile?.roomId) {
-      const unsubRoom = onSnapshot(doc(db, 'rooms', profile.roomId), (doc) => {
-        if (doc.exists()) setRoom({ id: doc.id, ...doc.data() } as Room);
-      }, (err) => handleFirestoreError(err, OperationType.GET, `rooms/${profile.roomId}`));
+    if (profile?.room_id) {
+      const fetchInitialData = async () => {
+        const { data: roomData } = await supabase.from('rooms').select('*').eq('id', profile.room_id).single();
+        if (roomData) setRoom(roomData as Room);
 
-      const unsubRules = onSnapshot(
-        query(collection(db, `/rooms/${profile.roomId}/rules`), orderBy('createdAt', 'desc')),
-        (snap) => setRules(snap.docs.map(d => ({ id: d.id, ...d.data() } as Rule))),
-        (err) => handleFirestoreError(err, OperationType.LIST, `rooms/${profile.roomId}/rules`)
-      );
+        const { data: rulesData } = await supabase.from('rules').select('*').eq('room_id', profile.room_id).order('created_at', { ascending: false });
+        if (rulesData) setRules(rulesData as Rule[]);
 
-      const unsubVows = onSnapshot(
-        query(collection(db, `/rooms/${profile.roomId}/vows`), orderBy('createdAt', 'desc')),
-        (snap) => setVows(snap.docs.map(d => ({ id: d.id, ...d.data() } as Vow))),
-        (err) => handleFirestoreError(err, OperationType.LIST, `rooms/${profile.roomId}/vows`)
-      );
+        const { data: vowsData } = await supabase.from('vows').select('*').eq('room_id', profile.room_id).order('created_at', { ascending: false });
+        if (vowsData) setVows(vowsData as Vow[]);
 
-      const unsubMemories = onSnapshot(
-        query(collection(db, `/rooms/${profile.roomId}/memories`), orderBy('date', 'desc')),
-        (snap) => setMemories(snap.docs.map(d => ({ id: d.id, ...d.data() } as Memory))),
-        (err) => handleFirestoreError(err, OperationType.LIST, `rooms/${profile.roomId}/memories`)
-      );
+        const { data: memoriesData } = await supabase.from('memories').select('*').eq('room_id', profile.room_id).order('date', { ascending: false });
+        if (memoriesData) setMemories(memoriesData as Memory[]);
+      };
+
+      fetchInitialData();
+
+      const channel = supabase
+        .channel(`room:${profile.room_id}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'rooms', filter: `id=eq.${profile.room_id}` }, (payload) => {
+          if (payload.new) setRoom(prev => ({ ...prev, ...payload.new } as Room));
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'rules', filter: `room_id=eq.${profile.room_id}` }, () => {
+          supabase.from('rules').select('*').eq('room_id', profile.room_id).order('created_at', { ascending: false }).then(({ data }) => { if (data) setRules(data as Rule[]); });
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'vows', filter: `room_id=eq.${profile.room_id}` }, () => {
+          supabase.from('vows').select('*').eq('room_id', profile.room_id).order('created_at', { ascending: false }).then(({ data }) => { if (data) setVows(data as Vow[]); });
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'memories', filter: `room_id=eq.${profile.room_id}` }, () => {
+          supabase.from('memories').select('*').eq('room_id', profile.room_id).order('date', { ascending: false }).then(({ data }) => { if (data) setMemories(data as Memory[]); });
+        })
+        .subscribe();
 
       return () => {
-        unsubRoom(); unsubRules(); unsubVows(); unsubMemories();
+        supabase.removeChannel(channel);
       };
     }
-  }, [profile?.roomId]);
+  }, [profile?.room_id]);
 
   if (authError) {
     return (
@@ -267,7 +295,7 @@ export default function App() {
         <button 
           onClick={() => {
             if(confirm("Start fresh on this device?")) {
-              auth.signOut();
+          supabase.auth.signOut();
               setProfile(null);
               window.location.reload();
             }
@@ -286,8 +314,8 @@ export default function App() {
             className="flex items-center justify-center gap-6 sm:gap-10 text-3xl sm:text-4xl font-serif italic font-bold text-slate-900"
           >
             <div className="flex flex-col items-center gap-2">
-              <span className={`${profile?.displayName === 'Ko' ? 'text-rose-600 scale-110 drop-shadow-sm' : 'opacity-40'} transition-all duration-500`}>Ko</span>
-              {profile?.displayName === 'Ko' && <motion.div layoutId="activeInd" className="w-2 h-2 bg-rose-500 rounded-full" />}
+              <span className={`${profile?.display_name === 'Ko' ? 'text-rose-600 scale-110 drop-shadow-sm' : 'opacity-40'} transition-all duration-500`}>Ko</span>
+              {profile?.display_name === 'Ko' && <motion.div layoutId="activeInd" className="w-2 h-2 bg-rose-500 rounded-full" />}
             </div>
             <div className="relative">
               <Heart className="text-rose-500 fill-rose-500 w-10 h-10 animate-pulse" />
@@ -296,12 +324,12 @@ export default function App() {
               </div>
             </div>
             <div className="flex flex-col items-center gap-2">
-              <span className={`${profile?.displayName === 'Thet Htar' ? 'text-rose-600 scale-110 drop-shadow-sm' : 'opacity-40'} transition-all duration-500`}>Thet Htar</span>
-              {profile?.displayName === 'Thet Htar' && <motion.div layoutId="activeInd" className="w-2 h-2 bg-rose-500 rounded-full" />}
+              <span className={`${profile?.display_name === 'Thet Htar' ? 'text-rose-600 scale-110 drop-shadow-sm' : 'opacity-40'} transition-all duration-500`}>Thet Htar</span>
+              {profile?.display_name === 'Thet Htar' && <motion.div layoutId="activeInd" className="w-2 h-2 bg-rose-500 rounded-full" />}
             </div>
           </motion.div>
           
-          {room.startDate && (
+          {room.start_date && (
             <div className="flex flex-col items-center gap-6">
               <motion.div 
                 initial={{ opacity: 0 }}
@@ -315,7 +343,7 @@ export default function App() {
                     Together Since
                   </p>
                   <p className="text-rose-400 text-xs font-bold uppercase tracking-widest">
-                    {new Date(room.startDate).toLocaleDateString(undefined, { 
+                    {new Date(room.start_date).toLocaleDateString(undefined, { 
                       year: 'numeric', month: 'long', day: 'numeric' 
                     })}
                   </p>
@@ -323,12 +351,12 @@ export default function App() {
                 <div className="relative w-8 h-8 ml-2 flex items-center justify-center bg-rose-50 rounded-full">
                   <input 
                     type="date"
-                    value={room.startDate}
+                    value={room.start_date}
                     onChange={async (e) => {
                       try {
-                        await updateDoc(doc(db, 'rooms', room.id), { startDate: e.target.value });
+                        await supabase.from('rooms').update({ start_date: e.target.value }).eq('id', room.id);
                       } catch (err) {
-                        handleFirestoreError(err, OperationType.UPDATE, `rooms/${room.id}`);
+                        handleDatabaseError(err, OperationType.UPDATE, `rooms/${room.id}`);
                       }
                     }}
                     className="opacity-0 w-full h-full absolute inset-0 z-10 cursor-pointer"
@@ -337,7 +365,7 @@ export default function App() {
                 </div>
               </motion.div>
 
-              <AnniversaryCountdown startDate={room.startDate} />
+              <AnniversaryCountdown start_date={room.start_date} />
               <MonthlyReminder day={2} />
             </div>
           )}
@@ -442,13 +470,13 @@ function TabButton({ active, onClick, icon, label }: { active: boolean, onClick:
   );
 }
 
-function AnniversaryCountdown({ startDate }: { startDate: string }) {
+function AnniversaryCountdown({ start_date }: { start_date: string }) {
   const [duration, setDuration] = useState<any>(null);
 
   useEffect(() => {
     const calculate = () => {
       const now = new Date();
-      const start = new Date(startDate);
+      const start = new Date(start_date);
       
       if (now < start) {
         setDuration(null);
@@ -466,7 +494,7 @@ function AnniversaryCountdown({ startDate }: { startDate: string }) {
     calculate();
     const interval = setInterval(calculate, 1000);
     return () => clearInterval(interval);
-  }, [startDate]);
+  }, [start_date]);
 
   if (!duration) return null;
 
@@ -539,35 +567,35 @@ function RulesSection({ roomId, rules, profile }: { roomId: string, rules: Rule[
     e.preventDefault();
     if (!title.trim() || !description.trim()) return;
     try {
-      await addDoc(collection(db, `rooms/${roomId}/rules`), {
+      await supabase.from('rules').insert({
+        room_id: roomId,
         title: title.trim(),
         description: description.trim(),
-        authorId: profile.uid,
-        authorName: profile.displayName,
-        createdAt: serverTimestamp(),
-        isDone: false
+        author_id: profile.uid,
+        author_name: profile.display_name,
+        is_done: false
       });
       setTitle('');
       setDescription('');
       setShowAdd(false);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `rooms/${roomId}/rules`);
+      handleDatabaseError(err, OperationType.WRITE, `rooms/${roomId}/rules`);
     }
   };
 
-  const toggleDone = async (id: string, isDone: boolean) => {
+  const toggleDone = async (id: string, is_done: boolean) => {
     try {
-      await updateDoc(doc(db, `rooms/${roomId}/rules`, id), { isDone: !isDone });
+      await supabase.from('rules').update({ is_done: !is_done }).eq('id', id);
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `rooms/${roomId}/rules/${id}`);
+      handleDatabaseError(err, OperationType.UPDATE, `rooms/${roomId}/rules/${id}`);
     }
   };
 
   const handleDelete = async (id: string) => {
     try {
-      await deleteDoc(doc(db, `rooms/${roomId}/rules`, id));
+      await supabase.from('rules').delete().eq('id', id);
     } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `rooms/${roomId}/rules/${id}`);
+      handleDatabaseError(err, OperationType.DELETE, `rooms/${roomId}/rules/${id}`);
     }
   };
 
@@ -642,27 +670,27 @@ function RulesSection({ roomId, rules, profile }: { roomId: string, rules: Rule[
             initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: idx * 0.05 }}
-            className={`group flex items-center gap-3 sm:gap-5 p-4 sm:p-5 rounded-[1.5rem] sm:rounded-[2rem] transition-all border ${rule.isDone ? 'bg-rose-50/30 border-transparent opacity-60' : 'bg-white border-rose-100 shadow-sm hover:shadow-md hover:border-rose-200'}`}
+            className={`group flex items-center gap-3 sm:gap-5 p-4 sm:p-5 rounded-[1.5rem] sm:rounded-[2rem] transition-all border ${rule.is_done ? 'bg-rose-50/30 border-transparent opacity-60' : 'bg-white border-rose-100 shadow-sm hover:shadow-md hover:border-rose-200'}`}
           >
             <button 
-              onClick={() => toggleDone(rule.id, rule.isDone)}
-              className={`flex-shrink-0 transition-all transform hover:scale-110 ${rule.isDone ? 'text-rose-500' : 'text-rose-200'}`}
+              onClick={() => toggleDone(rule.id, rule.is_done)}
+              className={`flex-shrink-0 transition-all transform hover:scale-110 ${rule.is_done ? 'text-rose-500' : 'text-rose-200'}`}
             >
-              {rule.isDone ? <CheckCircle2 className="w-6 h-6 sm:w-7 sm:h-7" /> : <Circle className="w-6 h-6 sm:w-7 sm:h-7" />}
+              {rule.is_done ? <CheckCircle2 className="w-6 h-6 sm:w-7 sm:h-7" /> : <Circle className="w-6 h-6 sm:w-7 sm:h-7" />}
             </button>
             <div className="flex-1 min-w-0 py-1">
-              <h4 className={`text-lg sm:text-xl font-serif italic font-bold leading-snug break-words ${rule.isDone ? 'line-through text-slate-400 decoration-rose-300' : 'text-rose-950'}`}>
+              <h4 className={`text-lg sm:text-xl font-serif italic font-bold leading-snug break-words ${rule.is_done ? 'line-through text-slate-400 decoration-rose-300' : 'text-rose-950'}`}>
                 {rule.title}
               </h4>
-              <p className={`mt-1 text-sm sm:text-base font-serif italic leading-relaxed break-words ${rule.isDone ? 'line-through text-slate-300' : 'text-slate-600'}`}>
+              <p className={`mt-1 text-sm sm:text-base font-serif italic leading-relaxed break-words ${rule.is_done ? 'line-through text-slate-300' : 'text-slate-600'}`}>
                 {rule.description}
               </p>
               <div className="flex items-center gap-2 mt-3 pt-3 border-t border-rose-100/30">
-                <div className={`w-1.5 h-1.5 rounded-full ${rule.authorName === 'Ko' ? 'bg-blue-400' : 'bg-rose-400'}`} />
-                <span className="text-[10px] uppercase tracking-widest font-bold text-slate-400">Proposed by {rule.authorName}</span>
+                <div className={`w-1.5 h-1.5 rounded-full ${rule.author_name === 'Ko' ? 'bg-blue-400' : 'bg-rose-400'}`} />
+                <span className="text-[10px] uppercase tracking-widest font-bold text-slate-400">Proposed by {rule.author_name}</span>
               </div>
             </div>
-            {rule.authorId === profile.uid && (
+            {rule.author_id === profile.uid && (
               <button 
                 onClick={() => handleDelete(rule.id)}
                 className="opacity-0 group-hover:opacity-100 p-2 text-slate-300 hover:text-rose-500 transition-all"
@@ -692,25 +720,25 @@ function VowsSection({ roomId, vows, profile }: { roomId: string, vows: Vow[], p
     e.preventDefault();
     if (!text.trim()) return;
     try {
-      await addDoc(collection(db, `rooms/${roomId}/vows`), {
+      await supabase.from('vows').insert({
+        room_id: roomId,
         text: text.trim(),
-        authorId: profile.uid,
-        authorName: profile.displayName,
-        createdAt: serverTimestamp()
+        author_id: profile.uid,
+        author_name: profile.display_name
       });
       setText('');
       setShowAdd(false);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `rooms/${roomId}/vows`);
+      handleDatabaseError(err, OperationType.WRITE, `rooms/${roomId}/vows`);
     }
   };
 
   const handleDelete = async (id: string) => {
     try {
-      await deleteDoc(doc(db, `rooms/${roomId}/vows`, id));
+      await supabase.from('vows').delete().eq('id', id);
       if (currentIndex >= vows.length - 1) setCurrentIndex(Math.max(0, vows.length - 2));
     } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `rooms/${roomId}/vows/${id}`);
+      handleDatabaseError(err, OperationType.DELETE, `rooms/${roomId}/vows/${id}`);
     }
   };
 
@@ -789,7 +817,7 @@ function VowsSection({ roomId, vows, profile }: { roomId: string, vows: Vow[], p
                 </p>
                 <div className="flex flex-col items-center gap-1">
                   <div className="w-10 h-px bg-rose-300"></div>
-                  <p className="text-sm font-serif font-bold text-rose-500 uppercase tracking-[0.2em]">{vows[currentIndex]?.authorName}</p>
+                  <p className="text-sm font-serif font-bold text-rose-500 uppercase tracking-[0.2em]">{vows[currentIndex]?.author_name}</p>
                 </div>
               </motion.div>
             </AnimatePresence>
@@ -811,7 +839,7 @@ function VowsSection({ roomId, vows, profile }: { roomId: string, vows: Vow[], p
               </>
             )}
             
-            {vows[currentIndex]?.authorId === profile.uid && (
+            {vows[currentIndex]?.author_id === profile.uid && (
               <button 
                 onClick={() => handleDelete(vows[currentIndex].id)}
                 className="absolute bottom-8 right-10 p-2 text-slate-300 hover:text-rose-500 transition-all opacity-0 group-hover:opacity-100"
@@ -894,27 +922,27 @@ function MemoriesSection({ roomId, memories, profile }: { roomId: string, memori
     if (!text.trim()) return;
 
     try {
-      await addDoc(collection(db, `rooms/${roomId}/memories`), {
+      await supabase.from('memories').insert({
+        room_id: roomId,
         text: text.trim(),
         date,
-        imageUrl: imageUrl,
-        authorId: profile.uid,
-        createdAt: serverTimestamp()
+        image_url: imageUrl,
+        author_id: profile.uid
       });
       setText('');
       setImageUrl(null);
       setShowAdd(false);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `rooms/${roomId}/memories`);
+      handleDatabaseError(err, OperationType.WRITE, `rooms/${roomId}/memories`);
     }
   };
 
   const handleDelete = async (id: string) => {
     if (!confirm('Forget this memory?')) return;
     try {
-      await deleteDoc(doc(db, `rooms/${roomId}/memories`, id));
+      await supabase.from('memories').delete().eq('id', id);
     } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `rooms/${roomId}/memories/${id}`);
+      handleDatabaseError(err, OperationType.DELETE, `rooms/${roomId}/memories/${id}`);
     }
   };
 
@@ -1034,7 +1062,7 @@ function MemoriesSection({ roomId, memories, profile }: { roomId: string, memori
                 <span className="text-[10px] sm:text-xs font-serif font-bold italic text-rose-600 bg-rose-100 px-3 sm:px-4 py-1 sm:py-1.5 rounded-full shadow-sm">
                   {new Date(memory.date).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}
                 </span>
-                {memory.authorId === profile.uid && (
+                {memory.author_id === profile.uid && (
                   <button 
                     onClick={() => handleDelete(memory.id)}
                     className="p-1.5 text-slate-300 hover:text-rose-500 transition-all rounded-full hover:bg-rose-50"
@@ -1045,13 +1073,13 @@ function MemoriesSection({ roomId, memories, profile }: { roomId: string, memori
               </div>
               <div className="bg-white/80 backdrop-blur-sm p-4 sm:p-6 rounded-[1.5rem] sm:rounded-[2.5rem] border border-rose-50 shadow-sm relative overflow-hidden space-y-4">
                 <div className="absolute -top-10 -right-10 w-24 h-24 bg-rose-50 rounded-full blur-2xl opacity-50"></div>
-                {memory.imageUrl && (
+                {memory.image_url && (
                   <motion.div 
                     initial={{ opacity: 0, scale: 0.95 }}
                     animate={{ opacity: 1, scale: 1 }}
                     className="relative rounded-2xl overflow-hidden shadow-lg border border-rose-50"
                   >
-                    <img src={memory.imageUrl} alt="Memory" className="w-full h-auto max-h-[400px] object-cover" />
+                    <img src={memory.image_url} alt="Memory" className="w-full h-auto max-h-[400px] object-cover" />
                   </motion.div>
                 )}
                 <p className="text-base sm:text-xl text-slate-800 font-serif italic leading-relaxed relative z-10 font-medium">
