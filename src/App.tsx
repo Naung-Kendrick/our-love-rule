@@ -75,11 +75,24 @@ export default function App() {
 
   useEffect(() => {
     const initAuth = async () => {
+      console.log('Starting initAuth...');
+      const timeout = setTimeout(() => {
+        if (loading) {
+          console.warn('Auth initialization taking too long, forcing loading to false');
+          setLoading(false);
+        }
+      }, 8000);
+
       try {
+        console.log('Fetching session...');
         const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-        if (sessionError) throw sessionError;
+        if (sessionError) {
+          console.error('Session error:', sessionError);
+          throw sessionError;
+        }
 
         if (session?.user) {
+          console.log('Session found for user:', session.user.id);
           setUser(session.user);
           setAuthError(null);
           const { data: userDoc } = await supabase
@@ -91,11 +104,19 @@ export default function App() {
             setProfile(userDoc as UserProfile);
           }
         } else {
+          console.log('No session, signing in anonymously...');
           try {
             const { data, error } = await supabase.auth.signInAnonymously();
-            if (error) throw error;
-            if (data.user) setUser(data.user);
+            if (error) {
+              console.error('Anonymous sign-in error:', error);
+              throw error;
+            }
+            if (data.user) {
+              console.log('Anonymous sign-in successful:', data.user.id);
+              setUser(data.user);
+            }
           } catch (error: any) {
+            console.error('Catch block anonymous error:', error);
             if (error.message?.includes('Anonymous sign-ins are disabled')) {
               setAuthError("Anonymous authentication is disabled. Please enable it in your Supabase Dashboard: Authentication > Providers > Anonymous (Enable Anonymous Sign-ins).");
             } else if (error.message?.includes('API key')) {
@@ -106,8 +127,11 @@ export default function App() {
           }
         }
       } catch (error: any) {
+        console.error('Top level initAuth error:', error);
         setAuthError(`Failed to connect to Supabase: ${error.message}`);
       } finally {
+        clearTimeout(timeout);
+        console.log('initAuth finished.');
         setLoading(false);
       }
     };
