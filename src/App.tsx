@@ -75,6 +75,10 @@ export default function App() {
 
   useEffect(() => {
     const initAuth = async () => {
+      const timeout = setTimeout(() => {
+        setLoading(false);
+      }, 8000);
+
       try {
         const { data: { session }, error: sessionError } = await supabase.auth.getSession();
         if (sessionError) throw sessionError;
@@ -108,6 +112,7 @@ export default function App() {
       } catch (error: any) {
         setAuthError(`Failed to connect to Supabase: ${error.message}`);
       } finally {
+        clearTimeout(timeout);
         setLoading(false);
       }
     };
