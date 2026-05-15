@@ -71,6 +71,8 @@ export default function App() {
   const [memories, setMemories] = useState<Memory[]>([]);
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [identityError, setIdentityError] = useState<string | null>(null);
+  const [identityLoading, setIdentityLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<'rules' | 'vows' | 'journey'>('rules');
 
   useEffect(() => {
@@ -141,7 +143,12 @@ export default function App() {
   }, []);
 
   const handleIdentitySelect = async (name: 'Ko' | 'Thet Htar') => {
-    if (!user) return;
+    if (!user) {
+      setIdentityError('Not authenticated yet. Please wait a moment and try again.');
+      return;
+    }
+    setIdentityLoading(true);
+    setIdentityError(null);
     const devProfile = {
       uid: user.id,
       display_name: name,
@@ -167,10 +174,14 @@ export default function App() {
         });
       }
 
-      await supabase.from('users').upsert(devProfile);
+      const { error: upsertError } = await supabase.from('users').upsert(devProfile);
+      if (upsertError) throw upsertError;
       setProfile(devProfile);
     } catch (error: any) {
-      console.error("Selection failed:", error);
+      console.error('Selection failed:', error);
+      setIdentityError(`Failed: ${error.message}. Make sure your Supabase database tables are created.`);
+    } finally {
+      setIdentityLoading(false);
     }
   };
 
@@ -268,21 +279,28 @@ export default function App() {
             <h1 className="text-5xl font-serif font-black italic text-slate-900 tracking-tight">Our Space</h1>
             <p className="text-slate-500 font-serif italic text-lg">Who is accessing our heart today?</p>
           </div>
+          {identityError && (
+            <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 text-rose-700 text-sm font-serif italic text-center">
+              {identityError}
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-6">
             <button
               onClick={() => handleIdentitySelect('Ko')}
-              className="group relative bg-white text-rose-600 border-2 border-rose-100 p-8 rounded-[2.5rem] font-serif font-bold italic text-3xl shadow-xl shadow-rose-100/50 hover:border-rose-400 hover:bg-rose-50 hover:scale-105 transition-all duration-300"
+              disabled={identityLoading}
+              className="group relative bg-white text-rose-600 border-2 border-rose-100 p-8 rounded-[2.5rem] font-serif font-bold italic text-3xl shadow-xl shadow-rose-100/50 hover:border-rose-400 hover:bg-rose-50 hover:scale-105 transition-all duration-300 disabled:opacity-50 disabled:cursor-wait"
             >
-              Ko
+              {identityLoading ? '...' : 'Ko'}
               <span className="absolute -bottom-2 -right-2 opacity-0 group-hover:opacity-100 transition-opacity">
                 <Heart className="w-6 h-6 fill-rose-400 text-rose-400" />
               </span>
             </button>
             <button
               onClick={() => handleIdentitySelect('Thet Htar')}
-              className="group relative bg-white text-rose-600 border-2 border-rose-100 p-8 rounded-[2.5rem] font-serif font-bold italic text-3xl shadow-xl shadow-rose-100/50 hover:border-rose-400 hover:bg-rose-50 hover:scale-105 transition-all duration-300"
+              disabled={identityLoading}
+              className="group relative bg-white text-rose-600 border-2 border-rose-100 p-8 rounded-[2.5rem] font-serif font-bold italic text-3xl shadow-xl shadow-rose-100/50 hover:border-rose-400 hover:bg-rose-50 hover:scale-105 transition-all duration-300 disabled:opacity-50 disabled:cursor-wait"
             >
-              Thet Htar
+              {identityLoading ? '...' : 'Thet Htar'}
               <span className="absolute -bottom-2 -left-2 opacity-0 group-hover:opacity-100 transition-opacity">
                 <Heart className="w-6 h-6 fill-rose-400 text-rose-400" />
               </span>
